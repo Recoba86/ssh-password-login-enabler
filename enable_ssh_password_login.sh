@@ -199,7 +199,20 @@ build_managed_block() {
 
 strip_existing_managed_block() {
   local file="$1"
+  local begin_count end_count
   local tmp
+
+  begin_count="$(grep -cFx "$MANAGED_BEGIN" "$file" || true)"
+  end_count="$(grep -cFx "$MANAGED_END" "$file" || true)"
+
+  if [[ "$begin_count" -ne "$end_count" ]]; then
+    die "Managed markers are unbalanced in $file (begin=$begin_count, end=$end_count). Refusing to edit to avoid config corruption."
+  fi
+
+  if [[ "$begin_count" -gt 1 ]]; then
+    die "Multiple managed blocks detected in $file. Clean up duplicate blocks manually, then rerun."
+  fi
+
   tmp="$(mktemp)"
 
   awk -v begin="$MANAGED_BEGIN" -v end="$MANAGED_END" '
@@ -518,12 +531,13 @@ restart_fail2ban_service() {
   fi
 
   if command_exists rc-service; then
-    rc-service fail2ban restart
-    if command_exists rc-update; then
-      rc-update add fail2ban default >/dev/null 2>&1 || true
+    if rc-service fail2ban restart; then
+      if command_exists rc-update; then
+        rc-update add fail2ban default >/dev/null 2>&1 || true
+      fi
+      log "Fail2ban restarted with OpenRC."
+      return 0
     fi
-    log "Fail2ban restarted with OpenRC."
-    return 0
   fi
 
   die "Fail2ban installed, but failed to start/restart service."
@@ -583,18 +597,23 @@ apply_oracle_iptables_cleanup() {
 reboot_now() {
   log "Rebooting now to finalize Oracle firewall cleanup..."
   if command_exists systemctl; then
-    systemctl reboot
-    return 0
+    if systemctl reboot; then
+      return 0
+    fi
+    warn "systemctl reboot failed; trying other reboot methods."
   fi
   if command_exists reboot; then
-    reboot
-    return 0
+    if reboot; then
+      return 0
+    fi
+    warn "'reboot' command failed; trying shutdown -r now."
   fi
   if command_exists shutdown; then
-    shutdown -r now
-    return 0
+    if shutdown -r now; then
+      return 0
+    fi
   fi
-  die "Could not find a reboot command (systemctl/reboot/shutdown)."
+  die "All reboot methods failed (systemctl/reboot/shutdown). Reboot manually."
 }
 
 main() {
