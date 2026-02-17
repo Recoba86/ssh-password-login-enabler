@@ -39,6 +39,13 @@ prompt_yes_no_default_no() {
   esac
 }
 
+prompt_oracle_firewall_cleanup() {
+  if prompt_yes_no_default_no "Is this server on Oracle Cloud and do you want to remove local iptables firewall rules?"; then
+    return 0
+  fi
+  return 1
+}
+
 pick_sshd_config() {
   if [[ -f /etc/ssh/sshd_config ]]; then
     echo "/etc/ssh/sshd_config"
@@ -550,16 +557,64 @@ optional_fail2ban_setup() {
   fi
 }
 
+apply_oracle_iptables_cleanup() {
+  log "Applying Oracle iptables cleanup (flush + accept policies)."
+
+  if command_exists iptables; then
+    iptables -P INPUT ACCEPT
+    iptables -P FORWARD ACCEPT
+    iptables -F
+    log "iptables cleanup completed."
+  else
+    warn "iptables command not found; skipping iptables policy/flush steps."
+  fi
+
+  if command_exists apt-get; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get purge -y netfilter-persistent || warn "Failed to purge netfilter-persistent."
+  else
+    warn "apt-get not found; skipping netfilter-persistent purge."
+  fi
+
+  rm -rf /etc/iptables
+  log "Removed /etc/iptables (if it existed)."
+}
+
+reboot_now() {
+  log "Rebooting now to finalize Oracle firewall cleanup..."
+  if command_exists systemctl; then
+    systemctl reboot
+    return 0
+  fi
+  if command_exists reboot; then
+    reboot
+    return 0
+  fi
+  if command_exists shutdown; then
+    shutdown -r now
+    return 0
+  fi
+  die "Could not find a reboot command (systemctl/reboot/shutdown)."
+}
+
 main() {
   require_root
 
-  local sshd_cfg sshd_bin target_user target_pass block_file
+  local sshd_cfg sshd_bin target_user target_pass block_file oracle_cleanup
   sshd_cfg="$(pick_sshd_config)"
   sshd_bin="$(pick_sshd_bin)"
+  oracle_cleanup="false"
 
   log "Using sshd config: $sshd_cfg"
   log "Using sshd binary: $sshd_bin"
-  log "Firewall rules are not modified by this script."
+
+  if prompt_oracle_firewall_cleanup; then
+    oracle_cleanup="true"
+    log "Oracle firewall cleanup option enabled."
+  else
+    log "Oracle firewall cleanup option skipped."
+    log "Firewall rules are not modified by this script."
+  fi
 
   target_user="$(prompt_username)"
   validate_username "$target_user"
@@ -584,6 +639,11 @@ main() {
   optional_fail2ban_setup
 
   target_pass=""
+
+  if [[ "$oracle_cleanup" == "true" ]]; then
+    apply_oracle_iptables_cleanup
+    reboot_now
+  fi
 
   log "Completed successfully. SSH password login is active."
   log "Manual check command: ssh ${target_user}@<server-ip>"

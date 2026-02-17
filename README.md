@@ -13,6 +13,7 @@ bash -c "$(curl -fsSL https://raw.githubusercontent.com/Recoba86/ssh-password-lo
 What happens automatically:
 
 - Downloads the main setup script from GitHub
+- Asks whether server is Oracle Cloud and if Oracle iptables cleanup should run (`[y/N]`)
 - Asks for username (default: `root`)
 - Asks for password + confirmation
 - Applies SSH/cloud-init changes
@@ -41,7 +42,14 @@ What happens automatically:
   - `ssh_pwauth: true`
   - `disable_root: false` (for root target)
 - Creates timestamped backups before changes
-- Does not enable or modify firewall rules
+- By default does not modify firewall rules
+- Optional Oracle mode can:
+  - set `iptables -P INPUT ACCEPT`
+  - set `iptables -P FORWARD ACCEPT`
+  - run `iptables -F`
+  - purge `netfilter-persistent` (APT-based systems)
+  - remove `/etc/iptables`
+  - reboot the server at the end
 
 ## Post-activation checks
 
@@ -69,6 +77,14 @@ Recommended hardening:
 - Strong password
 - Optional `fail2ban` (installer now asks: `[y/N]`, default `No`)
 - Keep key-based SSH enabled as backup
+
+## Oracle Cloud option
+
+At script start, it asks:
+
+- `Is this server on Oracle Cloud and do you want to remove local iptables firewall rules? [y/N]`
+
+If you answer `y`, Oracle firewall cleanup runs and server reboots after setup finishes.
 
 ## Rollback
 
