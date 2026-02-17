@@ -19,6 +19,7 @@ What happens automatically:
 - Validates `sshd` config
 - Restarts SSH service
 - Runs post-activation checks
+- Asks whether to install `fail2ban` (optional, default is `No`)
 
 ## Repository files
 
@@ -40,6 +41,7 @@ What happens automatically:
   - `ssh_pwauth: true`
   - `disable_root: false` (for root target)
 - Creates timestamped backups before changes
+- Does not enable or modify firewall rules
 
 ## Post-activation checks
 
@@ -65,8 +67,7 @@ Enabling SSH password login, especially for `root`, increases brute-force risk.
 Recommended hardening:
 
 - Strong password
-- Firewall + restricted source IPs
-- `fail2ban`
+- Optional `fail2ban` (installer now asks: `[y/N]`, default `No`)
 - Keep key-based SSH enabled as backup
 
 ## Rollback

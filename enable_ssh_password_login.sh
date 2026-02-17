@@ -29,6 +29,16 @@ command_exists() {
   command -v "$1" >/dev/null 2>&1
 }
 
+prompt_yes_no_default_no() {
+  local prompt="$1"
+  local ans
+  read -r -p "$prompt [y/N]: " ans
+  case "${ans:-N}" in
+    y|Y|yes|YES) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 pick_sshd_config() {
   if [[ -f /etc/ssh/sshd_config ]]; then
     echo "/etc/ssh/sshd_config"
@@ -399,6 +409,147 @@ run_post_activation_checks() {
   fi
 }
 
+detect_package_manager() {
+  if command_exists apt-get; then
+    echo "apt"
+    return 0
+  fi
+  if command_exists dnf; then
+    echo "dnf"
+    return 0
+  fi
+  if command_exists yum; then
+    echo "yum"
+    return 0
+  fi
+  if command_exists zypper; then
+    echo "zypper"
+    return 0
+  fi
+  if command_exists pacman; then
+    echo "pacman"
+    return 0
+  fi
+  if command_exists apk; then
+    echo "apk"
+    return 0
+  fi
+  return 1
+}
+
+install_fail2ban_package() {
+  local pm="$1"
+
+  case "$pm" in
+    apt)
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update -y
+      apt-get install -y fail2ban
+      ;;
+    dnf)
+      dnf install -y fail2ban
+      ;;
+    yum)
+      if ! yum install -y fail2ban; then
+        warn "Direct fail2ban install failed on yum. Trying EPEL..."
+        yum install -y epel-release
+        yum install -y fail2ban
+      fi
+      ;;
+    zypper)
+      zypper --non-interactive refresh
+      zypper --non-interactive install fail2ban
+      ;;
+    pacman)
+      pacman -Sy --noconfirm fail2ban
+      ;;
+    apk)
+      apk add --no-cache fail2ban
+      ;;
+    *)
+      die "Unsupported package manager for fail2ban installation: $pm"
+      ;;
+  esac
+}
+
+write_fail2ban_sshd_jail() {
+  local jail_dir="/etc/fail2ban/jail.d"
+  local jail_file
+
+  if [[ -d "$jail_dir" ]]; then
+    jail_file="${jail_dir}/codex-sshd.local"
+  else
+    jail_file="/etc/fail2ban/jail.local"
+  fi
+
+  backup_file "$jail_file"
+  cat > "$jail_file" <<'EOF'
+[sshd]
+enabled = true
+backend = auto
+maxretry = 5
+findtime = 10m
+bantime = 1h
+EOF
+
+  log "Fail2ban SSH jail written: $jail_file"
+}
+
+restart_fail2ban_service() {
+  if command_exists systemctl; then
+    if systemctl enable --now fail2ban 2>/dev/null; then
+      log "Fail2ban enabled and started with systemctl."
+      return 0
+    fi
+  fi
+
+  if command_exists service; then
+    if service fail2ban restart 2>/dev/null; then
+      log "Fail2ban restarted with service."
+      return 0
+    fi
+  fi
+
+  if command_exists rc-service; then
+    rc-service fail2ban restart
+    if command_exists rc-update; then
+      rc-update add fail2ban default >/dev/null 2>&1 || true
+    fi
+    log "Fail2ban restarted with OpenRC."
+    return 0
+  fi
+
+  die "Fail2ban installed, but failed to start/restart service."
+}
+
+optional_fail2ban_setup() {
+  local pm
+
+  if ! prompt_yes_no_default_no "Do you want to install and enable fail2ban for SSH protection?"; then
+    log "Skipped fail2ban setup."
+    return 0
+  fi
+
+  if ! command_exists fail2ban-client; then
+    pm="$(detect_package_manager)" || die "No supported package manager found to install fail2ban."
+    log "Installing fail2ban with package manager: $pm"
+    install_fail2ban_package "$pm"
+  else
+    log "Fail2ban is already installed."
+  fi
+
+  write_fail2ban_sshd_jail
+  restart_fail2ban_service
+
+  if command_exists fail2ban-client; then
+    if fail2ban-client status sshd >/dev/null 2>&1; then
+      log "Fail2ban check passed: sshd jail is active."
+    else
+      die "Fail2ban service is running, but sshd jail is not active."
+    fi
+  fi
+}
+
 main() {
   require_root
 
@@ -408,6 +559,7 @@ main() {
 
   log "Using sshd config: $sshd_cfg"
   log "Using sshd binary: $sshd_bin"
+  log "Firewall rules are not modified by this script."
 
   target_user="$(prompt_username)"
   validate_username "$target_user"
@@ -429,6 +581,7 @@ main() {
   set_user_password "$target_user" "$target_pass"
   restart_sshd
   run_post_activation_checks "$sshd_bin" "$target_user" "$target_pass"
+  optional_fail2ban_setup
 
   target_pass=""
 
