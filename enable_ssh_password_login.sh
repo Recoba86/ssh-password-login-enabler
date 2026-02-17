@@ -5,6 +5,8 @@ SCRIPT_NAME="$(basename "$0")"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 MANAGED_BEGIN="# BEGIN CODEX SSH PASSWORD LOGIN"
 MANAGED_END="# END CODEX SSH PASSWORD LOGIN"
+TARGET_USER=""
+TARGET_PASS=""
 
 log() {
   printf '[%s] %s\n' "$SCRIPT_NAME" "$*"
@@ -80,13 +82,11 @@ backup_file() {
 }
 
 prompt_username() {
-  local user
-  read -r -p "Target username for SSH password login [root]: " user
-  user="${user:-root}"
-  if [[ -z "$user" ]]; then
+  read -r -p "Target username for SSH password login [root]: " TARGET_USER
+  TARGET_USER="${TARGET_USER:-root}"
+  if [[ -z "$TARGET_USER" ]]; then
     die "Username cannot be empty."
   fi
-  printf '%s\n' "$user"
 }
 
 validate_username() {
@@ -145,7 +145,7 @@ prompt_password() {
       continue
     fi
 
-    printf '%s\n' "$pass1"
+    TARGET_PASS="$pass1"
     return 0
   done
 }
@@ -619,7 +619,7 @@ reboot_now() {
 main() {
   require_root
 
-  local sshd_cfg sshd_bin target_user target_pass block_file oracle_cleanup
+  local sshd_cfg sshd_bin block_file oracle_cleanup
   sshd_cfg="$(pick_sshd_config)"
   sshd_bin="$(pick_sshd_bin)"
   oracle_cleanup="false"
@@ -635,29 +635,29 @@ main() {
     log "Firewall rules are not modified by this script."
   fi
 
-  target_user="$(prompt_username)"
-  validate_username "$target_user"
-  ensure_user_exists "$target_user"
-  target_pass="$(prompt_password)"
+  prompt_username
+  validate_username "$TARGET_USER"
+  ensure_user_exists "$TARGET_USER"
+  prompt_password
 
   backup_file "$sshd_cfg"
   strip_existing_managed_block "$sshd_cfg"
 
   block_file="$(mktemp)"
-  build_managed_block "$target_user" > "$block_file"
+  build_managed_block "$TARGET_USER" > "$block_file"
   insert_managed_block_before_first_match "$sshd_cfg" "$block_file"
   rm -f "$block_file"
 
-  ensure_cloud_init_ssh_pwauth "$target_user"
+  ensure_cloud_init_ssh_pwauth "$TARGET_USER"
 
   validate_sshd_config "$sshd_bin" "$sshd_cfg"
 
-  set_user_password "$target_user" "$target_pass"
+  set_user_password "$TARGET_USER" "$TARGET_PASS"
   restart_sshd
-  run_post_activation_checks "$sshd_bin" "$target_user" "$target_pass"
+  run_post_activation_checks "$sshd_bin" "$TARGET_USER" "$TARGET_PASS"
   optional_fail2ban_setup
 
-  target_pass=""
+  TARGET_PASS=""
 
   if [[ "$oracle_cleanup" == "true" ]]; then
     apply_oracle_iptables_cleanup
@@ -665,7 +665,7 @@ main() {
   fi
 
   log "Completed successfully. SSH password login is active."
-  log "Manual check command: ssh ${target_user}@<server-ip>"
+  log "Manual check command: ssh ${TARGET_USER}@<server-ip>"
 }
 
 main "$@"
