@@ -31,10 +31,20 @@ command_exists() {
   command -v "$1" >/dev/null 2>&1
 }
 
+require_interactive_tty() {
+  if [[ ! -r /dev/tty ]] && [[ ! -t 0 ]]; then
+    die "Interactive TTY is required for username/password prompts."
+  fi
+}
+
 prompt_yes_no_default_no() {
   local prompt="$1"
   local ans
-  read -r -p "$prompt [y/N]: " ans
+  if [[ -r /dev/tty ]]; then
+    read -r -p "$prompt [y/N]: " ans < /dev/tty
+  else
+    read -r -p "$prompt [y/N]: " ans
+  fi
   case "${ans:-N}" in
     y|Y|yes|YES) return 0 ;;
     *) return 1 ;;
@@ -82,7 +92,11 @@ backup_file() {
 }
 
 prompt_username() {
-  read -r -p "Target username for SSH password login [root]: " TARGET_USER
+  if [[ -r /dev/tty ]]; then
+    read -r -p "Target username for SSH password login [root]: " TARGET_USER < /dev/tty
+  else
+    read -r -p "Target username for SSH password login [root]: " TARGET_USER
+  fi
   TARGET_USER="${TARGET_USER:-root}"
   if [[ -z "$TARGET_USER" ]]; then
     die "Username cannot be empty."
@@ -108,7 +122,11 @@ ensure_user_exists() {
   fi
 
   warn "User '$user' does not exist."
-  read -r -p "Create this user now? [y/N]: " create_ans
+  if [[ -r /dev/tty ]]; then
+    read -r -p "Create this user now? [y/N]: " create_ans < /dev/tty
+  else
+    read -r -p "Create this user now? [y/N]: " create_ans
+  fi
   case "${create_ans:-N}" in
     y|Y|yes|YES)
       if command_exists useradd; then
@@ -130,10 +148,17 @@ ensure_user_exists() {
 prompt_password() {
   local pass1 pass2
   while true; do
-    read -r -s -p "Enter new password: " pass1
-    printf '\n' >&2
-    read -r -s -p "Confirm new password: " pass2
-    printf '\n' >&2
+    if [[ -r /dev/tty ]]; then
+      read -r -s -p "Enter new password: " pass1 < /dev/tty
+      printf '\n' > /dev/tty
+      read -r -s -p "Confirm new password: " pass2 < /dev/tty
+      printf '\n' > /dev/tty
+    else
+      read -r -s -p "Enter new password: " pass1
+      printf '\n' >&2
+      read -r -s -p "Confirm new password: " pass2
+      printf '\n' >&2
+    fi
 
     if [[ -z "$pass1" ]]; then
       warn "Password cannot be empty."
@@ -153,12 +178,30 @@ prompt_password() {
 set_user_password() {
   local user="$1"
   local pass="$2"
+  local normalized_pass pass_hash
+
+  normalized_pass="${pass//$'\r'/}"
+  normalized_pass="${normalized_pass//$'\n'/}"
+  if [[ -z "$normalized_pass" ]]; then
+    die "Password is empty after normalization."
+  fi
+  if [[ "$normalized_pass" != "$pass" ]]; then
+    warn "Password contained newline characters; they were removed."
+  fi
 
   if command_exists chpasswd; then
-    printf '%s:%s\n' "$user" "$pass" | chpasswd
+    if ! printf '%s:%s\n' "$user" "$normalized_pass" | chpasswd; then
+      warn "chpasswd failed; trying usermod with a hashed password."
+      if command_exists usermod && command_exists openssl; then
+        pass_hash="$(printf '%s' "$normalized_pass" | openssl passwd -6 -stdin)"
+        usermod -p "$pass_hash" "$user"
+      else
+        die "Password update failed and no fallback (usermod + openssl) is available."
+      fi
+    fi
   elif command_exists passwd; then
     if passwd --help 2>&1 | grep -q -- '--stdin'; then
-      printf '%s\n' "$pass" | passwd --stdin "$user"
+      printf '%s\n' "$normalized_pass" | passwd --stdin "$user"
     else
       die "chpasswd is missing and passwd --stdin is unsupported."
     fi
@@ -618,6 +661,7 @@ reboot_now() {
 
 main() {
   require_root
+  require_interactive_tty
 
   local sshd_cfg sshd_bin block_file oracle_cleanup
   sshd_cfg="$(pick_sshd_config)"
