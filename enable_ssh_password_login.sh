@@ -72,6 +72,13 @@ prompt_username() {
   printf '%s\n' "$user"
 }
 
+validate_username() {
+  local user="$1"
+  if [[ ! "$user" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+    die "Username contains unsupported characters. Allowed: letters, numbers, dot, underscore, dash."
+  fi
+}
+
 ensure_user_exists() {
   local user="$1"
 
@@ -221,6 +228,7 @@ insert_managed_block_before_first_match() {
 }
 
 ensure_cloud_init_ssh_pwauth() {
+  local target_user="$1"
   local changed=0
   local cfg
 
@@ -233,6 +241,14 @@ ensure_cloud_init_ssh_pwauth() {
       rm -f "${cfg}.bak-temp"
       changed=1
       log "Updated cloud-init setting in: $cfg"
+    fi
+
+    if [[ "$target_user" == "root" ]] && grep -Eq '^[[:space:]]*disable_root[[:space:]]*:[[:space:]]*true[[:space:]]*$' "$cfg"; then
+      backup_file "$cfg"
+      sed -i.bak-temp -E 's|^[[:space:]]*disable_root[[:space:]]*:[[:space:]]*true[[:space:]]*$|disable_root: false|g' "$cfg"
+      rm -f "${cfg}.bak-temp"
+      changed=1
+      log "Updated cloud-init root policy in: $cfg"
     fi
   done
 
@@ -283,6 +299,106 @@ restart_sshd() {
   die "Could not restart ssh service (tried systemctl/service for sshd and ssh)."
 }
 
+extract_effective_sshd_config() {
+  local sshd_bin="$1"
+  local user="$2"
+  "$sshd_bin" -T -C "user=$user,host=localhost,addr=127.0.0.1" 2>/dev/null || true
+}
+
+effective_has_setting() {
+  local effective_cfg="$1"
+  local key="$2"
+  local expected="$3"
+  grep -Eq "^${key}[[:space:]]+${expected}$" <<<"$effective_cfg"
+}
+
+detect_ssh_port() {
+  local effective_cfg="$1"
+  local port
+  port="$(awk '/^port[[:space:]]+/ {print $2; exit}' <<<"$effective_cfg")"
+  if [[ -z "${port:-}" ]]; then
+    port="22"
+  fi
+  printf '%s\n' "$port"
+}
+
+perform_password_login_test() {
+  local user="$1"
+  local pass="$2"
+  local port="$3"
+  local token="__SSH_PASSWORD_AUTH_OK__"
+  local out
+
+  if ! command_exists ssh; then
+    warn "ssh client not found; skipping active login test."
+    return 2
+  fi
+
+  if ! command_exists sshpass; then
+    warn "sshpass is not installed; skipping active login test."
+    return 2
+  fi
+
+  out="$(SSHPASS="$pass" sshpass -e ssh \
+    -o PreferredAuthentications=password \
+    -o PubkeyAuthentication=no \
+    -o NumberOfPasswordPrompts=1 \
+    -o StrictHostKeyChecking=accept-new \
+    -o UserKnownHostsFile=/tmp/codex-ssh-known_hosts \
+    -o ConnectTimeout=8 \
+    -p "$port" \
+    "$user@127.0.0.1" \
+    "printf '%s\\n' '$token'" 2>&1 || true)"
+
+  if grep -q "$token" <<<"$out"; then
+    log "Active SSH password login test passed on 127.0.0.1:$port."
+    return 0
+  fi
+
+  warn "Active SSH password login test failed. Output:"
+  warn "$out"
+  return 1
+}
+
+run_post_activation_checks() {
+  local sshd_bin="$1"
+  local target_user="$2"
+  local target_pass="$3"
+
+  local effective_cfg ssh_port test_status
+  effective_cfg="$(extract_effective_sshd_config "$sshd_bin" "$target_user")"
+
+  if [[ -z "$effective_cfg" ]]; then
+    warn "Could not read effective sshd config with -T -C; skipping config-level checks."
+  else
+    if effective_has_setting "$effective_cfg" "passwordauthentication" "yes"; then
+      log "Effective setting check passed: passwordauthentication yes"
+    else
+      die "Effective setting check failed: passwordauthentication is not yes."
+    fi
+
+    if [[ "$target_user" == "root" ]]; then
+      if effective_has_setting "$effective_cfg" "permitrootlogin" "yes"; then
+        log "Effective setting check passed: permitrootlogin yes"
+      else
+        die "Effective setting check failed: permitrootlogin is not yes for root."
+      fi
+    fi
+  fi
+
+  ssh_port="$(detect_ssh_port "$effective_cfg")"
+  perform_password_login_test "$target_user" "$target_pass" "$ssh_port" || test_status=$?
+  test_status="${test_status:-0}"
+
+  if [[ "$test_status" -eq 0 ]]; then
+    log "All checks passed."
+  elif [[ "$test_status" -eq 2 ]]; then
+    warn "Config checks passed, but active login test was skipped."
+  else
+    die "Config changed, but active password login test failed."
+  fi
+}
+
 main() {
   require_root
 
@@ -294,6 +410,7 @@ main() {
   log "Using sshd binary: $sshd_bin"
 
   target_user="$(prompt_username)"
+  validate_username "$target_user"
   ensure_user_exists "$target_user"
   target_pass="$(prompt_password)"
 
@@ -305,15 +422,18 @@ main() {
   insert_managed_block_before_first_match "$sshd_cfg" "$block_file"
   rm -f "$block_file"
 
-  ensure_cloud_init_ssh_pwauth
+  ensure_cloud_init_ssh_pwauth "$target_user"
 
   validate_sshd_config "$sshd_bin" "$sshd_cfg"
 
   set_user_password "$target_user" "$target_pass"
   restart_sshd
+  run_post_activation_checks "$sshd_bin" "$target_user" "$target_pass"
 
-  log "Completed successfully."
-  log "You can now test SSH login with: ssh ${target_user}@<server-ip>"
+  target_pass=""
+
+  log "Completed successfully. SSH password login is active."
+  log "Manual check command: ssh ${target_user}@<server-ip>"
 }
 
 main "$@"

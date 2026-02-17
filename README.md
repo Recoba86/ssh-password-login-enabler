@@ -1,86 +1,84 @@
 # SSH Password Login Enabler
 
-A production-focused Bash script to enable SSH password authentication for a chosen user (including `root`) on common Linux server images.
+One-click + interactive setup to enable SSH password authentication for a chosen Linux user (including `root`).
 
-Script file: `enable_ssh_password_login.sh`
+## One-Click usage (recommended)
 
-## What it does
+Paste this on the target server (while logged in with SSH key):
 
-- Prompts for target username (default: `root`)
-- Prompts for and sets a new password securely
-- Optionally creates the user if it does not exist
-- Updates SSH server config with an idempotent managed block
-- Enables password-related SSH auth directives
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/Recoba86/ssh-password-login-enabler/main/one_click_setup.sh)"
+```
+
+What happens automatically:
+
+- Downloads the main setup script from GitHub
+- Asks for username (default: `root`)
+- Asks for password + confirmation
+- Applies SSH/cloud-init changes
+- Validates `sshd` config
+- Restarts SSH service
+- Runs post-activation checks
+
+## Repository files
+
+- `one_click_setup.sh`: bootstrap downloader/runner
+- `enable_ssh_password_login.sh`: main configurator script
+
+## What the main script changes
+
+- Prompts for target username and password
+- Creates user optionally if missing
+- Enables password auth directives:
+  - `PasswordAuthentication yes`
+  - `KbdInteractiveAuthentication yes`
+  - `ChallengeResponseAuthentication yes`
+  - `UsePAM yes`
 - Enables `PermitRootLogin yes` when target user is `root`
-- Tries to neutralize cloud-init password-auth disablement (`ssh_pwauth`)
-- Validates SSH config before restart
-- Restarts `sshd`/`ssh` service
-- Creates timestamped backups before changing files
+- Adds `Match User <user>` block for explicit password auth
+- Updates cloud-init entries when present:
+  - `ssh_pwauth: true`
+  - `disable_root: false` (for root target)
+- Creates timestamped backups before changes
 
-## Supported targets
+## Post-activation checks
 
-Designed for most Debian/Ubuntu, RHEL/CentOS/Rocky/Alma, and many cloud images.
+After restart, script checks:
 
-Primary config paths covered:
+- Effective `sshd` settings (`sshd -T -C ...`)
+- Password auth enabled
+- Root login enabled (if target is root)
+- Active SSH password login to `127.0.0.1` if `sshpass` is installed
 
-- `/etc/ssh/sshd_config`
-- `/etc/sshd_config`
-- `/etc/cloud/cloud.cfg`
-- `/etc/cloud/cloud.cfg.d/*.cfg`
+If `sshpass` is not installed, config checks still run and the active login test is skipped.
 
-## Usage
-
-1. Copy script to your server (while logged in with key-based SSH):
-
-```bash
-scp enable_ssh_password_login.sh root@SERVER_IP:/root/
-```
-
-2. Run it as root:
+## Manual usage (without one-click)
 
 ```bash
-sudo bash /root/enable_ssh_password_login.sh
+sudo bash enable_ssh_password_login.sh
 ```
 
-3. Follow prompts:
+## Security warning
 
-- username (default `root`)
-- password + confirmation
+Enabling SSH password login, especially for `root`, increases brute-force risk.
 
-4. Test in a second terminal session before closing the current one:
+Recommended hardening:
 
-```bash
-ssh root@SERVER_IP
-```
-
-## Important security warning
-
-Enabling SSH password login (especially for `root`) increases brute-force risk.
-
-Strongly recommended after enabling:
-
-- Keep a strong password
-- Change SSH port if needed
-- Enable firewall rules (`ufw`/`firewalld`/security groups)
-- Install fail2ban
-- Restrict source IPs where possible
+- Strong password
+- Firewall + restricted source IPs
+- `fail2ban`
+- Keep key-based SSH enabled as backup
 
 ## Rollback
 
-The script automatically creates backup files like:
+Backups are created automatically, for example:
 
 - `/etc/ssh/sshd_config.bak.YYYYmmdd-HHMMSS`
 - `/etc/cloud/cloud.cfg.bak.YYYYmmdd-HHMMSS`
 
-To rollback, restore backup and restart SSH:
+Rollback example:
 
 ```bash
 sudo cp /etc/ssh/sshd_config.bak.YYYYmmdd-HHMMSS /etc/ssh/sshd_config
 sudo systemctl restart sshd || sudo systemctl restart ssh
 ```
-
-## Notes
-
-- The script is idempotent for its managed block and can be re-run.
-- It does not remove your existing key-based login.
-- Always keep your current SSH session open while testing new login behavior.
