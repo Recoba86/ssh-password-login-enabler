@@ -131,9 +131,9 @@ prompt_password() {
   local pass1 pass2
   while true; do
     read -r -s -p "Enter new password: " pass1
-    printf '\n'
+    printf '\n' >&2
     read -r -s -p "Confirm new password: " pass2
-    printf '\n'
+    printf '\n' >&2
 
     if [[ -z "$pass1" ]]; then
       warn "Password cannot be empty."
