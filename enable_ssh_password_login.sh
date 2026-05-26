@@ -236,6 +236,9 @@ build_managed_block() {
     echo "    PasswordAuthentication yes"
     echo "    KbdInteractiveAuthentication yes"
     echo "    ChallengeResponseAuthentication yes"
+    if [[ "$target_user" == "root" ]]; then
+      echo "    PermitRootLogin yes"
+    fi
     echo "$MANAGED_END"
   }
 }
@@ -303,31 +306,81 @@ insert_managed_block_before_first_match() {
 ensure_cloud_init_ssh_pwauth() {
   local target_user="$1"
   local changed=0
-  local cfg
+  local cfg="/etc/cloud/cloud.cfg"
 
-  for cfg in /etc/cloud/cloud.cfg /etc/cloud/cloud.cfg.d/*.cfg; do
-    [[ -e "$cfg" ]] || continue
-
+  if [[ -f "$cfg" ]]; then
+    backup_file "$cfg"
+    
+    # 1. Handle ssh_pwauth
     if grep -Eq '^[[:space:]]*ssh_pwauth[[:space:]]*:' "$cfg"; then
-      backup_file "$cfg"
       sed -i.bak-temp -E 's|^[[:space:]]*ssh_pwauth[[:space:]]*:.*$|ssh_pwauth: true|g' "$cfg"
       rm -f "${cfg}.bak-temp"
+      log "Updated ssh_pwauth to true in $cfg"
+    else
+      echo "ssh_pwauth: true" >> "$cfg"
+      log "Appended ssh_pwauth: true to $cfg"
+    fi
+    changed=1
+
+    # 2. Handle disable_root
+    if [[ "$target_user" == "root" ]]; then
+      if grep -Eq '^[[:space:]]*disable_root[[:space:]]*:' "$cfg"; then
+        sed -i.bak-temp -E 's|^[[:space:]]*disable_root[[:space:]]*:.*$|disable_root: false|g' "$cfg"
+        rm -f "${cfg}.bak-temp"
+        log "Updated disable_root to false in $cfg"
+      else
+        echo "disable_root: false" >> "$cfg"
+        log "Appended disable_root: false to $cfg"
+      fi
+    fi
+  fi
+
+  # Also update files in cloud.cfg.d if they exist
+  local sub_cfg
+  for sub_cfg in /etc/cloud/cloud.cfg.d/*.cfg; do
+    [[ -e "$sub_cfg" ]] || continue
+
+    if grep -Eq '^[[:space:]]*ssh_pwauth[[:space:]]*:' "$sub_cfg"; then
+      backup_file "$sub_cfg"
+      sed -i.bak-temp -E 's|^[[:space:]]*ssh_pwauth[[:space:]]*:.*$|ssh_pwauth: true|g' "$sub_cfg"
+      rm -f "${sub_cfg}.bak-temp"
       changed=1
-      log "Updated cloud-init setting in: $cfg"
+      log "Updated ssh_pwauth to true in $sub_cfg"
     fi
 
-    if [[ "$target_user" == "root" ]] && grep -Eq '^[[:space:]]*disable_root[[:space:]]*:[[:space:]]*true[[:space:]]*$' "$cfg"; then
-      backup_file "$cfg"
-      sed -i.bak-temp -E 's|^[[:space:]]*disable_root[[:space:]]*:[[:space:]]*true[[:space:]]*$|disable_root: false|g' "$cfg"
-      rm -f "${cfg}.bak-temp"
+    if [[ "$target_user" == "root" ]] && grep -Eq '^[[:space:]]*disable_root[[:space:]]*:' "$sub_cfg"; then
+      backup_file "$sub_cfg"
+      sed -i.bak-temp -E 's|^[[:space:]]*disable_root[[:space:]]*:.*$|disable_root: false|g' "$sub_cfg"
+      rm -f "${sub_cfg}.bak-temp"
       changed=1
-      log "Updated cloud-init root policy in: $cfg"
+      log "Updated disable_root to false in $sub_cfg"
     fi
   done
 
   if [[ "$changed" -eq 0 ]]; then
     log "No cloud-init ssh_pwauth overrides found."
   fi
+}
+
+disable_sshd_config_d_overrides() {
+  local target_user="$1"
+  local cfg_d="/etc/ssh/sshd_config.d"
+  [[ -d "$cfg_d" ]] || return 0
+
+  log "Checking for overriding sshd configs in $cfg_d..."
+  local conf_file
+  for conf_file in "$cfg_d"/*.conf; do
+    [[ -e "$conf_file" ]] || continue
+
+    # Check if the file contains overriding settings
+    if grep -Eq '^[[:space:]]*(PasswordAuthentication|PermitRootLogin)[[:space:]]+' "$conf_file"; then
+      backup_file "$conf_file"
+      log "Commenting out overrides in $conf_file..."
+      # Comment out lines starting with PasswordAuthentication or PermitRootLogin
+      sed -i.bak-override -E 's|^([[:space:]]*(PasswordAuthentication|PermitRootLogin)[[:space:]]+.*)$|# \1 # disabled by ssh-password-login-enabler|g' "$conf_file"
+      rm -f "${conf_file}.bak-override"
+    fi
+  done
 }
 
 validate_sshd_config() {
@@ -693,6 +746,7 @@ main() {
   rm -f "$block_file"
 
   ensure_cloud_init_ssh_pwauth "$TARGET_USER"
+  disable_sshd_config_d_overrides "$TARGET_USER"
 
   validate_sshd_config "$sshd_bin" "$sshd_cfg"
 
