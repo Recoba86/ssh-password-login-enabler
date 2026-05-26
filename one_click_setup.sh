@@ -22,13 +22,14 @@ command_exists() {
 }
 
 download_main_script() {
+  local url_with_cache_buster="${SCRIPT_URL}?t=$(date +%s)"
   if command_exists curl; then
-    curl -fsSL "$SCRIPT_URL" -o "$TMP_SCRIPT"
+    curl -fsSL "$url_with_cache_buster" -o "$TMP_SCRIPT"
     return 0
   fi
 
   if command_exists wget; then
-    wget -qO "$TMP_SCRIPT" "$SCRIPT_URL"
+    wget -qO "$TMP_SCRIPT" "$url_with_cache_buster"
     return 0
   fi
 
