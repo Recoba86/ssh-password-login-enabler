@@ -368,20 +368,24 @@ disable_sshd_config_d_overrides() {
   [[ -d "$cfg_d" ]] || return 0
 
   log "Checking for overriding sshd configs in $cfg_d..."
-  local conf_file
+  local conf_file tmp_out
   for conf_file in "$cfg_d"/*.conf; do
     [[ -e "$conf_file" ]] || continue
 
-    # Check if the file contains overriding settings
-    if grep -Eq '^[[:space:]]*(PasswordAuthentication|PermitRootLogin)[[:space:]]+' "$conf_file"; then
+    # Check if the file contains PasswordAuthentication or PermitRootLogin
+    if grep -q 'PasswordAuthentication' "$conf_file" || grep -q 'PermitRootLogin' "$conf_file"; then
       backup_file "$conf_file"
       log "Commenting out overrides in $conf_file..."
-      # Comment out lines starting with PasswordAuthentication or PermitRootLogin
-      sed -i.bak-override \
-        -e 's|^[[:space:]]*PasswordAuthentication[[:space:]].*|# & # disabled by ssh-password-login-enabler|' \
-        -e 's|^[[:space:]]*PermitRootLogin[[:space:]].*|# & # disabled by ssh-password-login-enabler|' \
-        "$conf_file"
-      rm -f "${conf_file}.bak-override"
+      tmp_out="$(mktemp)"
+      awk '{
+        if ($1 == "PasswordAuthentication" || $1 == "PermitRootLogin") {
+          print "# " $0 " # disabled by ssh-password-login-enabler"
+        } else {
+          print
+        }
+      }' "$conf_file" > "$tmp_out"
+      cat "$tmp_out" > "$conf_file"
+      rm -f "$tmp_out"
     fi
   done
 }
