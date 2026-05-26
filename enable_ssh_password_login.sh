@@ -377,7 +377,10 @@ disable_sshd_config_d_overrides() {
       backup_file "$conf_file"
       log "Commenting out overrides in $conf_file..."
       # Comment out lines starting with PasswordAuthentication or PermitRootLogin
-      sed -i.bak-override -E 's|^([[:space:]]*(PasswordAuthentication|PermitRootLogin)[[:space:]]+.*)$|# \1 # disabled by ssh-password-login-enabler|g' "$conf_file"
+      sed -i.bak-override \
+        -e 's|^[[:space:]]*PasswordAuthentication[[:space:]].*|# & # disabled by ssh-password-login-enabler|' \
+        -e 's|^[[:space:]]*PermitRootLogin[[:space:]].*|# & # disabled by ssh-password-login-enabler|' \
+        "$conf_file"
       rm -f "${conf_file}.bak-override"
     fi
   done
